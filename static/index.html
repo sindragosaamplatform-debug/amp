@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Підтримка платформи · support bot</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e7e9ee;
+    --muted: #939aab; --accent: #6aa9ff; --user: #1f2733; --tool: #1b2b20;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #fff; --line: #e3e6ec; --text: #131720;
+      --muted: #6b7280; --accent: #1f6feb; --user: #eaf1ff; --tool: #eaf6ec;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 13px; }
+  header button {
+    margin-left: auto; background: none; border: 1px solid var(--line); color: var(--muted);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 13px;
+  }
+  #log { flex: 1; overflow-y: auto; padding: 20px; }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  .msg { margin-bottom: 18px; }
+  .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .bubble {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .user .bubble { background: var(--user); }
+  .bubble a { color: var(--accent); }
+  .bubble img { max-width: 100%; border-radius: 8px; margin-top: 8px; display: block; border: 1px solid var(--line); }
+  .tools { margin: 6px 0 2px; display: flex; flex-direction: column; gap: 4px; }
+  .tool {
+    font-size: 12px; color: var(--muted); background: var(--tool); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    align-self: flex-start; max-width: 100%; overflow-wrap: anywhere;
+  }
+  .usage { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .err { color: #ff6b6b; }
+  form {
+    border-top: 1px solid var(--line); background: var(--panel); padding: 12px 18px;
+  }
+  form .wrap { display: flex; gap: 10px; }
+  textarea {
+    flex: 1; resize: none; background: var(--bg); color: var(--text); font: inherit;
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-height: 46px; max-height: 180px;
+  }
+  button.send {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 0 20px; font-weight: 600; cursor: pointer;
+  }
+  button.send:disabled { opacity: .5; cursor: default; }
+  .hint { max-width: 780px; margin: 0 auto 18px; color: var(--muted); font-size: 13px; }
+  .hint b { color: var(--text); font-weight: 600; }
+  .chip {
+    display: inline-block; border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 10px; margin: 4px 6px 0 0; cursor: pointer; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Підтримка платформи</h1>
+  <span class="meta" id="meta">завантаження бази…</span>
+  <button id="reset">Новий діалог</button>
+</header>
+
+<div id="log">
+  <div class="hint wrap">
+    Підтримка платформи. Бот відповідає за статтями довідкового центру
+    help.aff.ltd і завжди дає посилання; кейси з робочих чатів використовує як
+    контекст. Питайте українською, російською або англійською.
+    <div>
+      <span class="chip">Як перерахувати баланс партнера після зміни ставки по KPI?</span>
+      <span class="chip">Партнер не бачить лендінг у кабінеті</span>
+      <span class="chip">Как настроить постбек в Keitaro?</span>
+    </div>
+  </div>
+  <div class="wrap" id="messages"></div>
+</div>
+
+<form id="form">
+  <div class="wrap">
+    <textarea id="input" placeholder="Ваше питання…" autofocus></textarea>
+    <button class="send" id="send" type="submit">Надіслати</button>
+  </div>
+</form>
+
+<script>
+const log = document.getElementById('log');
+const messages = document.getElementById('messages');
+const form = document.getElementById('form');
+const input = document.getElementById('input');
+const send = document.getElementById('send');
+let sessionId = null;
+
+fetch('/api/kb').then(r => r.json()).then(s => {
+  const parts = Object.entries(s.categories).map(([k, v]) => `${k}: ${v}`).join(' · ');
+  document.getElementById('meta').textContent = `${s.articles} записів (${parts})`;
+});
+
+document.getElementById('reset').onclick = () => {
+  sessionId = null; messages.innerHTML = '';
+};
+
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.onclick = () => { input.value = chip.textContent; form.requestSubmit(); };
+});
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text) node.textContent = text;
+  return node;
+}
+
+function addMessage(who, cls) {
+  const msg = el('div', 'msg ' + cls);
+  msg.appendChild(el('div', 'who', who));
+  const tools = el('div', 'tools');
+  const bubble = el('div', 'bubble');
+  msg.append(tools, bubble);
+  messages.appendChild(msg);
+  return { msg, tools, bubble };
+}
+
+// Minimal, escaped rendering: links, bold, and inline screenshots.
+function render(text) {
+  const esc = text.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const images = [];
+  let html = esc
+    .replace(/\[image:\s*([^\]\s]+)[^\]]*\]/g, (_, url) => { images.push(url); return ''; })
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (m, pre, url) => {
+      if (/\.(png|jpe?g|gif|webp)$/i.test(url)) { images.push(url); return pre; }
+      return `${pre}<a href="${url}" target="_blank" rel="noopener">${url}</a>`;
+    })
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  for (const url of images) {
+    html += `<a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="скриншот"></a>`;
+  }
+  return html;
+}
+
+const toolLabel = (e) => {
+  const a = e.input || {};
+  if (e.name === 'kb_search') return `пошук: «${a.query}»`;
+  if (e.name === 'kb_get_article') return `читає статтю: ${a.article_id}`;
+  if (e.name === 'kb_list') return `дивиться каталог${a.category ? ': ' + a.category : ''}`;
+  return e.name;
+};
+
+form.onsubmit = async (ev) => {
+  ev.preventDefault();
+  const text = input.value.trim();
+  if (!text || send.disabled) return;
+  input.value = '';
+  send.disabled = true;
+
+  addMessage('Ви', 'user').bubble.textContent = text;
+  const out = addMessage('Бот', 'bot');
+  log.scrollTop = log.scrollHeight;
+
+  let buffer = '';
+  try {
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, message: text }),
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, { stream: true });
+      const chunks = pending.split('\n\n');
+      pending = chunks.pop();
+      for (const chunk of chunks) {
+        if (!chunk.startsWith('data: ')) continue;
+        const e = JSON.parse(chunk.slice(6));
+        if (e.type === 'session') sessionId = e.session_id;
+        else if (e.type === 'text') { buffer += e.text; out.bubble.innerHTML = render(buffer); }
+        else if (e.type === 'tool') out.tools.appendChild(el('div', 'tool', toolLabel(e)));
+        else if (e.type === 'done') {
+          const u = e.usage;
+          out.msg.appendChild(el('div', 'usage',
+            `${u.input_tokens} in / ${u.output_tokens} out · з кешу ${u.cache_read}`));
+        }
+        else if (e.type === 'error') out.msg.appendChild(el('div', 'usage err', e.text));
+        log.scrollTop = log.scrollHeight;
+      }
+    }
+  } catch (err) {
+    out.msg.appendChild(el('div', 'usage err', String(err)));
+  }
+  send.disabled = false;
+  input.focus();
+};
+
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+});
+</script>
+</body>
+</html>
