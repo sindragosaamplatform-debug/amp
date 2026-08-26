@@ -27,8 +27,9 @@ ingest_cases.py ──┘     98 записів   пошук  └── bot.py �
 | [kb.py](kb.py) | Завантаження корпусу, каталог-роутер, повнотекстовий пошук |
 | [kb_mcp.py](kb_mcp.py) | MCP-сервер (stdio): `kb_search`, `kb_get_article`, `kb_list` |
 | [bot.py](bot.py) | Агент: системний промпт, tool-loop, стрімінг |
-| [server.py](server.py) | HTTP + SSE, віддає веб-UI |
-| [static/index.html](static/index.html) | Чат-інтерфейс |
+| [app.py](app.py) | ASGI-застосунок (FastAPI): веб-UI, SSE, гейт за кодом |
+| [static/](static) | Чат-інтерфейс і сторінка входу |
+| [vercel.json](vercel.json) | Конфіг деплою |
 
 **Без векторної бази.** Каталог усіх 98 записів (~11k токенів) лежить у системному
 промпті як роутер і кешується (prompt caching), а модель читає **статтю цілком**
@@ -46,7 +47,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 Веб-UI (http://127.0.0.1:8765):
 
 ```bash
-.venv/bin/python server.py
+.venv/bin/python -m uvicorn app:app --reload --port 8765
 ```
 
 Той самий бот у терміналі:
@@ -114,7 +115,7 @@ for c in admin-panel aff-area additional-resources; do python3 scrape_help.py --
 |---|---|---|
 | `AFF_BOT_MODEL` | `claude-opus-4-8` | Модель |
 | `AFF_BOT_EFFORT` | `medium` | Глибина міркувань: `low`…`max` |
-| `AFF_BOT_PORT` | `8765` | Порт веб-UI |
+| `ACCESS_CODE` | порожньо | Код доступу до веб-UI; порожній = без гейта |
 | `KB_ROOT` | `./kb-uk` | Корінь корпусу (напр. `kb-ru`) |
 
 ## Межі, зашиті в промпт
@@ -125,6 +126,19 @@ for c in admin-panel aff-area additional-resources; do python3 scrape_help.py --
 - Не обіцяє виплати, ставки й рішення по акаунтах — це до менеджера.
 - Не питає паролі, 2FA-коди, токени.
 - Не переносить дані між клієнтами: кейс однієї команди не переказується іншій.
+
+## Деплой на Vercel
+
+Застосунок stateless: історію діалогу тримає браузер і надсилає назад щоходу,
+тому будь-який інстанс обслуговує будь-який запит.
+
+- точка входу — `app.py`, змінна `app` (ASGI), Python 3.12 з `.python-version`;
+- залежності — `requirements.txt`;
+- `vercel.json` — `maxDuration` 120 с, регіон `fra1`, виключення зайвого з бандла;
+- змінні оточення в проєкті: `ANTHROPIC_API_KEY` (Production + Preview),
+  `ACCESS_CODE`, за бажанням `AFF_BOT_MODEL`.
+
+База знань (~1 МБ) їде в бандл автоматично — ліміт для Python 500 МБ.
 
 ## Чого ще немає (наступні кроки)
 

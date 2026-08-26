@@ -105,7 +105,10 @@ const messages = document.getElementById('messages');
 const form = document.getElementById('form');
 const input = document.getElementById('input');
 const send = document.getElementById('send');
-let sessionId = null;
+
+// The server is stateless — the conversation lives here and is posted back
+// each turn, thinking and tool blocks included.
+let history = [];
 
 fetch('/api/kb').then(r => r.json()).then(s => {
   const parts = Object.entries(s.categories).map(([k, v]) => `${k}: ${v}`).join(' · ');
@@ -113,7 +116,7 @@ fetch('/api/kb').then(r => r.json()).then(s => {
 });
 
 document.getElementById('reset').onclick = () => {
-  sessionId = null; messages.innerHTML = '';
+  history = []; messages.innerHTML = '';
 };
 
 document.querySelectorAll('.chip').forEach(chip => {
@@ -179,8 +182,9 @@ form.onsubmit = async (ev) => {
     const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, message: text }),
+      body: JSON.stringify({ messages: history, message: text }),
     });
+    if (resp.status === 401) { location.reload(); return; }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let pending = '';
@@ -193,7 +197,7 @@ form.onsubmit = async (ev) => {
       for (const chunk of chunks) {
         if (!chunk.startsWith('data: ')) continue;
         const e = JSON.parse(chunk.slice(6));
-        if (e.type === 'session') sessionId = e.session_id;
+        if (e.type === 'history') history = e.messages;
         else if (e.type === 'text') { buffer += e.text; out.bubble.innerHTML = render(buffer); }
         else if (e.type === 'tool') out.tools.appendChild(el('div', 'tool', toolLabel(e)));
         else if (e.type === 'done') {
