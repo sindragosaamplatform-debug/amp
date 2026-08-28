@@ -3,7 +3,7 @@
   "functions": {
     "app.py": {
       "maxDuration": 120,
-      "excludeFiles": "{.venv/**,__pycache__/**,**/*.pyc,*.zip,.claude/**}"
+      "excludeFiles": "{.venv/**,__pycache__/**,**/*.pyc,*.zip,.claude/**,kb-uk/**/*.md}"
     }
   },
   "regions": ["fra1"]

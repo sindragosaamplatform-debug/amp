@@ -116,6 +116,18 @@ for c in admin-panel aff-area additional-resources; do python3 scrape_help.py --
 `--keep-images` лишає маркери `[image: URL]` — скріншоти на публічному ucarecdn,
 бот показує їх клієнту, коли той «не бачить кнопку».
 
+**Після будь-якого оновлення корпусу перезберіть пак:**
+
+```bash
+python3 kb.py pack
+```
+
+`kb-uk/_pack.json` — весь корпус одним файлом. Якщо він є, база вантажиться з
+нього (0.11 с проти 0.39 с на 2547 файлах) — це помітно на холодних стартах
+serverless. У бандл Vercel їдуть тільки пак і код: `.md` виключені через
+`excludeFiles`. Пак закомічений, тому забути його оновити = задеплоїти стару
+базу; дату збірки видно в `python3 kb.py` та в `/api/kb`.
+
 ## Налаштування
 
 | Змінна | За замовчуванням | Що робить |
@@ -145,7 +157,7 @@ for c in admin-panel aff-area additional-resources; do python3 scrape_help.py --
 - змінні оточення в проєкті: `ANTHROPIC_API_KEY` (Production + Preview),
   `ACCESS_CODE`, за бажанням `AFF_BOT_MODEL`.
 
-База знань (~11 МБ) їде в бандл автоматично — ліміт для Python 500 МБ.
+У бандл їде `_pack.json` (~6.7 МБ) замість 2547 файлів — ліміт для Python 500 МБ.
 
 ## Чого ще немає (наступні кроки)
 

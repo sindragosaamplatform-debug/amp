@@ -11,8 +11,10 @@ exactly the same corpus. Standard library only.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import time
 from typing import Dict, Iterable, List, Optional
 
 KB_ROOT = os.environ.get(
@@ -20,6 +22,11 @@ KB_ROOT = os.environ.get(
 )
 
 LANGUAGES = ("uk", "ru", "en")
+
+# A single packed file loads far faster than thousands of small ones, which
+# matters on serverless cold starts. Built by `python3 kb.py pack`; the corpus
+# directories stay the source of truth.
+PACK_NAME = "_pack.json"
 
 # Categories that are internal working material, not publishable help-center
 # content. Everything loaded from them is flagged so the model cannot mistake
@@ -112,6 +119,7 @@ class KnowledgeBase:
         self.root = root
         self.articles: Dict[str, Article] = {}
         self.categories: Dict[str, dict] = {}
+        self.source = "directories"
         self._load()
 
     # -- loading ------------------------------------------------------------ #
@@ -120,6 +128,8 @@ class KnowledgeBase:
             raise RuntimeError(
                 f"knowledge base not found at {self.root} — run scrape_help.py first"
             )
+        if self._load_pack():
+            return
         for category in sorted(os.listdir(self.root)):
             cat_dir = os.path.join(self.root, category)
             if not os.path.isdir(cat_dir):
@@ -133,6 +143,39 @@ class KnowledgeBase:
                 self.articles[article.id] = article
         if not self.articles:
             raise RuntimeError(f"no articles found under {self.root}")
+
+    def _load_pack(self) -> bool:
+        """Load the packed corpus if one was built. Returns False to fall back."""
+        path = os.path.join(self.root, PACK_NAME)
+        if not os.path.isfile(path):
+            return False
+        with open(path, encoding="utf-8") as fh:
+            pack = json.load(fh)
+        self.categories = pack["categories"]
+        self.packed_at = pack.get("generated_at", "")
+        for row in pack["articles"]:
+            article = Article(row["category"], row["slug"], row["title"],
+                              row["summary"], row["section"], row["url"], row["body"])
+            self.articles[article.id] = article
+        self.source = PACK_NAME
+        return bool(self.articles)
+
+    def pack(self) -> str:
+        """Write the corpus into one file for fast start-up."""
+        path = os.path.join(self.root, PACK_NAME)
+        payload = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "categories": self.categories,
+            "articles": [
+                {"category": a.category, "slug": a.slug, "title": a.title,
+                 "summary": a.summary, "section": a.section, "url": a.url,
+                 "body": a.body}
+                for a in self.articles.values()
+            ],
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+        return path
 
     # -- lookups ------------------------------------------------------------ #
     def get(self, article_id: str) -> Optional[Article]:
@@ -229,6 +272,8 @@ class KnowledgeBase:
     def stats(self) -> dict:
         return {
             "root": self.root,
+            "source": getattr(self, "source", "directories"),
+            "packed_at": getattr(self, "packed_at", ""),
             "articles": len(self.articles),
             "categories": {c: sum(1 for a in self.articles.values() if a.category == c)
                            for c in self.categories},
@@ -301,7 +346,6 @@ def get_kb(root: str = KB_ROOT) -> KnowledgeBase:
 
 
 if __name__ == "__main__":
-    import json
     import sys
 
     kb = get_kb()
@@ -312,5 +356,12 @@ if __name__ == "__main__":
         print(article.render() if article else "not found")
     elif len(sys.argv) > 1 and sys.argv[1] == "catalog":
         print(kb.catalog())
+    elif len(sys.argv) > 1 and sys.argv[1] == "pack":
+        # rebuild from the directories, never from a stale pack
+        pack_path = os.path.join(KB_ROOT, PACK_NAME)
+        if os.path.exists(pack_path):
+            os.remove(pack_path)
+        fresh = KnowledgeBase(KB_ROOT)
+        print(f"packed {len(fresh.articles)} entries -> {fresh.pack()}")
     else:
         print(json.dumps(kb.stats(), ensure_ascii=False, indent=2))
