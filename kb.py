@@ -143,13 +143,16 @@ class KnowledgeBase:
         matches = [a for a in self.articles.values() if a.slug == article_id.strip("/")]
         return matches[0] if len(matches) == 1 else None
 
-    def search(self, query: str, limit: int = 5, category: Optional[str] = None) -> List[dict]:
+    def search(self, query: str, limit: int = 5, category: Optional[str] = None,
+               exclude_internal: bool = False) -> List[dict]:
         terms = [_stem(w) for w in _tokenize(query)]
         if not terms:
             return []
         scored = []
         for article in self.articles.values():
             if category and article.category != category:
+                continue
+            if exclude_internal and article.internal:
                 continue
             score = 0.0
             hits = 0
@@ -193,6 +196,24 @@ class KnowledgeBase:
             lines.append(f"## {meta['title']} [{category}]{mark}")
             if meta.get("summary"):
                 lines.append(meta["summary"])
+
+            # Internal categories hold thousands of chat cases — listing each one
+            # would bury the help-center articles and blow up the system prompt.
+            # The catalog carries counts by topic; kb_search reaches the rest.
+            if category in INTERNAL_CATEGORIES:
+                counts: Dict[str, int] = {}
+                for article in self.articles.values():
+                    if article.category == category:
+                        counts[article.section or "Інше"] = counts.get(
+                            article.section or "Інше", 0) + 1
+                total = sum(counts.values())
+                lines.append(f"{total} кейсів; шукати через kb_search "
+                             f"(category=\"{category}\"). Теми:")
+                for section, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+                    lines.append(f"- {section} — {count}")
+                lines.append("")
+                continue
+
             current = None
             for article in self.articles.values():
                 if article.category != category:

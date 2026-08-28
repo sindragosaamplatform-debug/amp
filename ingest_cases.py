@@ -7,24 +7,42 @@ domains, Jira keys and people's chat handles. This script strips those and
 writes one redacted case per file into the knowledge base, flagged internal so
 the bot uses them as background — never as something to quote at a client.
 
-    python3 ingest_cases.py "~/Downloads/CSM DASHBOARD ... .csv"
+    python3 ingest_cases.py "~/Downloads/CSM DASHBOARD"*.csv
 
-The source CSV is never copied into the project.
+Handles every export variant seen so far: the column names drift between
+monthly and quarterly sheets, and the quarterly "All" sheets repeat the months
+they cover, so identical requests are de-duplicated by question text.
+
+The source CSVs are never copied into the project.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import os
 import re
 import sys
-from typing import Dict, List
+from typing import Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kb-uk", "team-cases")
 
 # Handles belonging to the platform side of the conversation.
-PLATFORM_HANDLES = {"skylight", "amp", "frost"}
+PLATFORM_HANDLES = {"skylight", "amp", "frost", "raskolnikov", "iskrynka",
+                    "cania710", "vel", "hope"}
+
+# The export's column names drift between sheets; map every variant we've seen.
+COLUMNS = {
+    "date": ("Дата",),
+    "team": ("Чат команди", "Команда"),
+    "category": ("Категорія",),
+    "kind": ("Тип запиту",),
+    "question": ("Питання",),
+    "answer": ("Відповідь",),
+    "status": ("Статус (якщо баг)", "Статус"),
+    "task": ("Задача",),
+}
 
 HANDLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]{1,19}$")
 
@@ -72,7 +90,7 @@ def redact(text: str) -> str:
         r"https?://(?!help\.aff\.ltd|aff\.ltd)[^\s)]+", "[посилання]", text)
     text = re.sub(r"\s*\[\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?\s*\]", "", text, flags=re.I)
     text = re.sub(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", "[ip]", text)
-    text = re.sub(r"(?<!\d)\d{5,8}(?!\d)", "[id]", text)
+    text = re.sub(r"(?<!\d)\d{5,}(?!\d)", "[id]", text)
     return text
 
 
@@ -154,11 +172,76 @@ def make_summary(question: str, extra: List[str], limit: int = 220) -> str:
     return " · ".join(parts) if parts else "внутрішній кейс"
 
 
-def convert(csv_path: str, out_dir: str) -> int:
-    with open(csv_path, encoding="utf-8-sig", newline="") as fh:
-        rows = list(csv.DictReader(fh))
+def field(row: Dict[str, str], key: str, fieldnames: Tuple[str, ...]) -> str:
+    """Read a logical column whatever this sheet happens to call it."""
+    for name in COLUMNS[key]:
+        value = (row.get(name) or "").strip()
+        if value:
+            return value
+    # a few sheets ship the date in an unnamed leading column
+    if key == "date" and fieldnames and fieldnames[0] == "":
+        return (row.get("") or "").strip()
+    return ""
+
+
+def parse_date(raw: str) -> Optional[Tuple[int, int, int]]:
+    """`10/8/26` → (2026, 8, 10). Day first, as the exports are written."""
+    m = re.match(r"^\s*(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})\s*$", raw)
+    if not m:
+        return None
+    day, month, year = (int(g) for g in m.groups())
+    if year < 100:
+        year += 2000
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return (year, month, day)
+
+
+def read_rows(paths: Iterable[str]) -> List[Dict[str, str]]:
+    """Load every sheet into one list of logical rows, de-duplicated.
+
+    The quarterly "All" sheets repeat the monthly ones, so the same request
+    shows up more than once; keep the first occurrence of each question.
+    """
+    seen: Dict[str, str] = {}
+    collected: List[Dict[str, str]] = []
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8-sig", newline="") as fh:
+                reader = csv.DictReader(fh)
+                fieldnames = tuple(reader.fieldnames or ())
+                rows = list(reader)
+        except OSError as exc:
+            print(f"skip {path}: {exc}", file=sys.stderr)
+            continue
+
+        source = os.path.basename(path)
+        for row in rows:
+            question = field(row, "question", fieldnames)
+            if not question:
+                continue
+            key = hashlib.md5(re.sub(r"\s+", " ", question.lower()).encode()).hexdigest()
+            if key in seen:
+                continue
+            seen[key] = source
+            collected.append({
+                "question": question,
+                "answer": field(row, "answer", fieldnames),
+                "category": field(row, "category", fieldnames),
+                "kind": field(row, "kind", fieldnames),
+                "status": field(row, "status", fieldnames),
+                "task": field(row, "task", fieldnames),
+                "date": field(row, "date", fieldnames),
+                "source": source,
+                "key": key,
+            })
+    return collected
+
+
+def convert(paths: List[str], out_dir: str) -> int:
+    rows = read_rows(paths)
     if not rows:
-        print("empty CSV", file=sys.stderr)
+        print("no rows with a question found", file=sys.stderr)
         return 1
 
     os.makedirs(out_dir, exist_ok=True)
@@ -166,20 +249,32 @@ def convert(csv_path: str, out_dir: str) -> int:
         if name.endswith(".md"):
             os.remove(os.path.join(out_dir, name))
 
-    handles = collect_handles(rows)
+    handles = collect_handles([{"Питання": r["question"], "Відповідь": r["answer"]}
+                               for r in rows])
+
+    # newest first — recent cases describe the platform as it is now
+    rows.sort(key=lambda r: parse_date(r["date"]) or (0, 0, 0), reverse=True)
+
     written: List[Dict[str, str]] = []
     for i, row in enumerate(rows, start=1):
-        question = clean_dialogue(row.get("Питання", ""), handles)
-        answer = clean_dialogue(row.get("Відповідь", ""), handles)
+        question = clean_dialogue(row["question"], handles)
+        answer = clean_dialogue(row["answer"], handles)
         if not question.strip():
             continue
-        category = (row.get("Категорія") or "").strip()
-        kind = (row.get("Тип запиту") or "").strip()
-        status = (row.get("Статус (якщо баг)") or "").strip()
-        date = (row.get("Дата") or "").strip()
-        title = make_title(question, category, i)
 
-        summary = make_summary(question, [kind, date, f"статус: {status}" if status else ""])
+        category = row["category"] or "Інше"
+        parsed = parse_date(row["date"])
+        stamp = "%04d-%02d" % parsed[:2] if parsed else "undated"
+        slug = f"case-{stamp}-{row['key'][:6]}"
+
+        title = make_title(question, category, i)
+        extra = [row["kind"], row["date"]]
+        if row["status"]:
+            extra.append(f"статус: {row['status']}")
+        if row["task"]:
+            extra.append(f"задача: {row['task']}")
+        summary = make_summary(question, extra)
+
         body = [
             "> ВНУТРІШНІЙ КЕЙС. Робоче листування команд з платформою AMP.",
             "> Використовувати як контекст; не цитувати клієнту й не переказувати",
@@ -187,52 +282,51 @@ def convert(csv_path: str, out_dir: str) -> int:
             "",
             "## Запит",
             question,
+            "",
+            "## Відповідь платформи",
+            answer if answer.strip() else "(у вивантаженні відповіді немає)",
         ]
-        if answer.strip():
-            body += ["", "## Відповідь платформи", answer]
-        else:
-            body += ["", "## Відповідь платформи", "(у вивантаженні відповіді немає)"]
-
-        slug = f"case-{i:02d}"
         head = [
             f"# {title}",
             "Category: team-cases",
-            f"Section: {category or 'Інше'}",
+            f"Section: {category}",
             f"Summary: {summary}",
         ]
         with open(os.path.join(out_dir, slug + ".md"), "w", encoding="utf-8") as fh:
             fh.write("\n".join(head) + "\n\n" + "\n".join(body).strip() + "\n")
-        written.append({"slug": slug, "title": title, "section": category or "Інше",
-                        "summary": summary})
+        written.append({"slug": slug, "section": category, "date": row["date"]})
 
+    # Compact index: with thousands of cases the per-case list would blow up the
+    # model's system prompt, so the catalog carries counts and search finds the rest.
+    sections: Dict[str, int] = {}
+    for case in written:
+        sections[case["section"]] = sections.get(case["section"], 0) + 1
     index = [
         "# 🗂 Кейси з робочих чатів (внутрішнє)",
-        "Summary: Реальні запити команд до платформи AMP і відповіді платформи. "
-        "Внутрішній контекст: не цитувати клієнту.",
+        "Summary: Реальні звернення команд до платформи AMP і відповіді платформи. "
+        "Внутрішній контекст: не цитувати клієнту. Шукати через kb_search — "
+        "перелік кейсів у каталог не виводиться.",
         "",
-        f"{len(written)} кейсів.",
+        f"{len(written)} кейсів за темами:",
         "",
     ]
-    current = None
-    for case in written:
-        if case["section"] != current:
-            current = case["section"]
-            index += ["", f"## {current}"]
-        index.append(f"- {case['slug']}.md — {case['title']}: {case['summary']}")
+    for section, count in sorted(sections.items(), key=lambda kv: -kv[1]):
+        index.append(f"- {section} — {count}")
     with open(os.path.join(out_dir, "_index.md"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(index).strip() + "\n")
 
-    print(f"wrote {len(written)} cases to {out_dir}/", file=sys.stderr)
+    print(f"wrote {len(written)} cases to {out_dir}/ "
+          f"(from {len(paths)} files, duplicates dropped)", file=sys.stderr)
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("csv", help="path to the CSM dashboard CSV export")
+    ap.add_argument("csv", nargs="+", help="CSM dashboard CSV exports")
     ap.add_argument("--out", default=DEFAULT_OUT, help="output directory")
     args = ap.parse_args()
-    return convert(os.path.expanduser(args.csv), args.out)
+    return convert([os.path.expanduser(p) for p in args.csv], args.out)
 
 
 if __name__ == "__main__":

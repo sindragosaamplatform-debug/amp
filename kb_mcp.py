@@ -97,13 +97,27 @@ TOOLS = [
 # --------------------------------------------------------------------------- #
 # tool implementations
 # --------------------------------------------------------------------------- #
+MIN_HELP_CENTER_HITS = 2
+
+
 def tool_kb_search(args: Dict[str, Any]) -> str:
     kb = get_kb()
-    results = kb.search(
-        args.get("query", ""),
-        limit=int(args.get("limit") or 5),
-        category=args.get("category"),
-    )
+    query = args.get("query", "")
+    limit = int(args.get("limit") or 5)
+    category = args.get("category")
+    results = kb.search(query, limit=limit, category=category)
+
+    # There are far more chat cases than articles, so a plain top-N can come
+    # back all-cases. Keep a couple of slots for the citable source.
+    if not category:
+        found = sum(1 for r in results if r["category"] not in INTERNAL_CATEGORIES)
+        if found < MIN_HELP_CENTER_HITS:
+            top_up = kb.search(query, limit=MIN_HELP_CENTER_HITS, exclude_internal=True)
+            have = {r["id"] for r in results}
+            extra = [r for r in top_up if r["id"] not in have]
+            if extra:
+                results = (results[:max(0, limit - len(extra))] + extra)
+                results.sort(key=lambda r: -r["score"])
     if not results:
         return "No matching articles. Try different wording or call kb_list."
     out = []
